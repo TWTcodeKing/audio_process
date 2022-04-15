@@ -1,0 +1,158 @@
+# ################################
+# Model: SepFormer for source separation
+# https://arxiv.org/abs/2010.13154
+# Dataset : WSJ0-2mix and WSJ0-3mix
+# ################################
+#
+# Basic parameters
+# Seed needs to be set at top of yaml, before objects with parameters are made
+#
+seed: 1234
+__set_seed: !apply:torch.manual_seed [!ref <seed>]
+
+# Data params
+
+# e.g. '/yourpath/wsj0-mix/2speakers'
+# end with 2speakers for wsj0-2mix or 3speakers for wsj0-3mix
+data_folder: !PLACEHOLDER
+
+# the path for wsj0/si_tr_s/ folder -- only needed if dynamic mixing is used
+# e.g. /yourpath/wsj0-processed/si_tr_s/
+# you need to convert the original wsj0 to 8k
+# you can do this conversion with the script ../meta/preprocess_dynamic_mixing.py
+base_folder_dm: /yourpath/wsj0-processed/si_tr_s/
+
+experiment_name: SudoNet
+output_folder: !ref results/<experiment_name>/<seed>
+train_log: !ref <output_folder>/train_log.txt
+save_folder: !ref <output_folder>/save
+train_data: !ref <save_folder>/wsj_tr.csv
+valid_data: !ref <save_folder>/wsj_cv.csv
+test_data: !ref <save_folder>/wsj_tt.csv
+skip_prep: False
+
+
+# Experiment params
+auto_mix_prec: True # Set it to True for mixed precision
+test_only: False
+num_spks: 2 # set to 3 for wsj0-3mix
+progressbar: True
+save_audio: False # Save estimated sources on disk
+sample_rate: 8000
+
+# Training parameters
+N_epochs: 100
+batch_size: 1
+lr: 0.00015
+clip_grad_norm: 5
+loss_upper_lim: 999999  # this is the upper limit for an acceptable loss
+# if True, the training sequences are cut to a specified length
+limit_training_signal_len: True
+# this is the length of sequences if we choose to limit
+# the signal length of training sequences
+training_signal_len: 32000
+
+# Set it to True to dynamically create mixtures at training time
+dynamic_mixing: False
+
+# Parameters for data augmentation
+use_wavedrop: False
+use_speedperturb: True
+use_speedperturb_sameforeachsource: False
+use_rand_shift: False
+min_shift: -8000
+max_shift: 8000
+
+
+speedperturb: !new:speechbrain.lobes.augment.TimeDomainSpecAugment
+    perturb_prob: 1.0
+    drop_freq_prob: 0.0
+    drop_chunk_prob: 0.0
+    sample_rate: !ref <sample_rate>
+    speeds: [95, 100, 105]
+
+wavedrop: !new:speechbrain.lobes.augment.TimeDomainSpecAugment
+    perturb_prob: 0.0
+    drop_freq_prob: 1.0
+    drop_chunk_prob: 1.0
+    sample_rate: !ref <sample_rate>
+
+# loss thresholding -- this thresholds the training loss
+threshold_byloss: True
+threshold: -30
+
+
+# Dataloader options
+# Set num_workers: 0 on MacOS due to behavior of the multiprocessing library
+dataloader_opts:
+    batch_size: !ref <batch_size>
+    num_workers: 3
+
+
+optimizer: !name:torch.optim.Adam
+    lr: !ref <lr>
+    weight_decay: 0
+
+loss: !name:speechbrain.nnet.losses.get_si_snr_with_pitwrapper
+
+#loss: !name:speechbrain.nnet.loss.stoi_loss
+lr_scheduler: !new:speechbrain.nnet.schedulers.ReduceLROnPlateau
+    factor: 0.5
+    patience: 2
+    dont_halve_until_epoch: 85
+
+epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
+    limit: !ref <N_epochs>
+
+out_channels: 128
+in_channels: 512
+num_blocks: 16
+upsampling_depth: 4
+enc_kernel_size: 21
+enc_num_basis: 512
+
+
+SudoNet: !new:speechbrain.lobes.models.dual_path.SuDORMRF
+    out_channels: !ref <out_channels>
+    in_channels: !ref <in_channels>
+    num_blocks: !ref <num_blocks>
+    upsampling_depth: !ref <upsampling_depth>
+    enc_kernel_size: !ref <enc_kernel_size>
+    enc_num_basis: !ref <enc_num_basis>
+    num_sources : !ref <num_spks>
+
+
+
+Max_channels: 32
+In_channels: 1
+Res_layers: 1
+Fusion_layers: 2
+Ksize: 3
+Padding: 1
+Stride: 1
+
+
+Encoder: !new:speechbrain.lobes.model.dual_path.SudoEncoder
+
+
+Decoder: !new:speechbrain.lobes.model.dual_path.SudoDecoder
+
+modules:
+    Encoder: !ref <Encoder>
+    SudoNet: !ref <SudoNet>
+    Group_block: !ref<Group_block>
+    Decoder: !ref <Decoder>
+
+checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
+    checkpoints_dir: !ref <save_folder>
+    recoverables:
+        Encoder: !ref <Encoder>
+        SudoNet: !ref <SudoNet>
+        Group_block: !ref <Group_block>
+        Decoder: !ref <Decoder>
+        counter: !ref <epoch_counter>
+        lr_scheduler: !ref <lr_scheduler>
+
+
+train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
+    save_file: !ref <train_log>
